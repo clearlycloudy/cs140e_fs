@@ -19,7 +19,7 @@ pub struct Partition {
 pub struct CachedDevice {
     device: Box<BlockDevice>,
     cache: HashMap<u64, CacheEntry>,
-    partition: Partition
+    pub partition: Partition,
 }
 
 impl CachedDevice {
@@ -81,7 +81,14 @@ impl CachedDevice {
     ///
     /// Returns an error if there is an error reading the sector from the disk.
     pub fn get_mut(&mut self, sector: u64) -> io::Result<&mut [u8]> {
-        unimplemented!("CachedDevice::get_mut()")
+
+        self.get( sector )?;
+
+        let mut cached_entry = self.cache.get_mut( &sector ).unwrap();
+
+        cached_entry.dirty = true;
+         
+        Ok( cached_entry.data.as_mut_slice() )
     }
 
     /// Returns a reference to the cached sector `sector`. If the sector is not
@@ -91,12 +98,61 @@ impl CachedDevice {
     ///
     /// Returns an error if there is an error reading the sector from the disk.
     pub fn get(&mut self, sector: u64) -> io::Result<&[u8]> {
-        unimplemented!("CachedDevice::get()")
+
+        if !self.cache.contains_key( &sector ) {
+
+            let ( physical_sector, factor ) = self.virtual_to_physical( sector );
+
+            let sector_size_physical = self.device.sector_size();
+            
+            let mut buf = vec![ 0u8; ( sector_size_physical * factor ) as usize ];
+
+            for i in 0..factor {
+                
+                self.device.read_sector( physical_sector + i, & mut buf[ ( i * sector_size_physical ) as usize .. ] )?;
+            }
+            let ce = CacheEntry{ data: buf, dirty: false };
+            self.cache.insert( sector, ce );
+        }
+
+        let cached_entry = self.cache.get( &sector ).unwrap();
+
+        Ok( cached_entry.data.as_slice() )
     }
 }
 
 // FIXME: Implement `BlockDevice` for `CacheDevice`. The `read_sector` and
 // `write_sector` methods should only read/write from/to cached sectors.
+
+impl BlockDevice for CachedDevice {
+
+    fn sector_size(&self) -> u64 { //logical sector size
+        self.partition.sector_size
+    }
+
+    fn read_sector(&mut self, n: u64, buf: &mut [u8]) -> io::Result<usize> {
+
+        use std::io::Read;
+
+        if self.cache.contains_key(&n) {
+            
+            let cached_entry = &self.cache[&n];
+            
+            io::Cursor::new(&cached_entry.data).read(buf)
+
+        } else {
+
+            Err( io::Error::new( io::ErrorKind::Interrupted, "sector not exist" ) )
+                
+        }
+    }
+    
+    fn write_sector(&mut self, n: u64, buf: &[u8]) -> io::Result<usize> {
+        unimplemented!();
+    }
+    
+}
+
 
 impl fmt::Debug for CachedDevice {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
